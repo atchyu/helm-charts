@@ -107,6 +107,8 @@ pod:
 
 swift_multi_tenant: true
 
+coordinationBackend: 'memcached'
+
 api:
   override: {}
   api_workers: 4

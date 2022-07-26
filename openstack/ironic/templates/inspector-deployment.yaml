@@ -96,6 +96,7 @@ spec:
           name: ironic-etc
           subPath: ironic-inspector.filters
           readOnly: true
+        {{- include "utils.coordination.volume_mount" . | indent 10 }}
       {{- if and .Values.global.ironic_tftp_ip .Values.inspector.dhcp.range .Values.inspector.dhcp.options.router }}
       - name: dhcp
         image: {{ .Values.global.registry }}/ubuntu-source-staticdhcpd:{{.Values.imageVersionStaticdhcpd | default .Values.imageVersion | required "Please set ironic.imageVersion or similar"}}
@@ -160,3 +161,4 @@ spec:
           name: ironic-inspector-dhcp
           defaultMode: 0444
       {{- end }}
+      {{- include "utils.coordination.volumes" . | indent 8 }}

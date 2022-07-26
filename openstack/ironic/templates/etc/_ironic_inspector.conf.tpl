@@ -33,8 +33,7 @@ project_domain_name = {{.Values.global.keystone_service_domain | default "Defaul
 [firewall]
 manage_firewall = False
 
-[coordination]
-backend_url = {{ .Chart.Name }}-memcached.{{ include "svc_fqdn" . }}:{{ .Values.memcached.memcached.port | default 11211 }}
+{{ include "ini_sections.coordination" . }}
 
 [processing]
 store_data = none
