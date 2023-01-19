@@ -1,0 +1,306 @@
+{{- if .Values.global.enable_kvm }}
+{{- $hypervisor := merge .Values.defaults.hypervisor.kvm .Values.defaults.hypervisor.common }}
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: nova-compute-kvm
+  labels:
+    system: openstack
+    type: backend
+    component: nova
+spec:
+  revisionHistoryLimit: {{ .Values.pod.lifecycle.upgrades.deployments.revision_history }}
+  selector:
+    matchLabels:
+      name: nova-compute-kvm
+  template:
+    metadata:
+      labels:
+{{ tuple . "nova" "compute" | include "helm-toolkit.snippets.kubernetes_metadata_labels" | indent 8 }}
+        name: nova-compute-kvm
+        alert-tier: os
+        alert-service: nova
+        hypervisor: "kvm"
+      annotations:
+        configmap-etc-hash: {{ include (print .Template.BasePath "/etc-configmap.yaml") . | sha256sum }}
+        configmap-kvm-etc-hash: {{ include "kvm_configmap" . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: {{ $hypervisor.default.graceful_shutdown_timeout | default .Values.defaults.default.graceful_shutdown_timeout | add 5 }}
+      hostNetwork: true
+      hostPID: true
+      hostIPC: true
+      tolerations:
+      - key: "species"
+        operator: "Equal"
+        value: "hypervisor"
+        effect: "NoSchedule"
+      nodeSelector:
+        species: hypervisor
+      initContainers:
+      - name: fix-permssion-instance-volume
+        image: {{ required ".Values.global.dockerHubMirror is missing" .Values.global.dockerHubMirror }}/library/busybox
+        command: ["sh", "-c", "chown -R 42436:42436 /var/lib/nova"]
+        volumeMounts:
+        - mountPath: /var/lib/nova/instances
+          name: instances
+      - name: load-kernel-mod
+        image: {{ required ".Values.global.dockerHubMirror is missing" .Values.global.dockerHubMirror }}/library/busybox
+        command:
+        - modprobe
+        - openvswitch
+        - kvm
+        volumeMounts:
+        - mountPath: /lib/modules
+          name: modules
+          readOnly: true
+      containers:
+        - name: nova-compute
+          image: {{ tuple . "compute" | include "container_image_nova" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+          - kubernetes-entrypoint
+          env:
+          - name: COMMAND
+            value: "nova-compute"
+          {{- include "k8s_entrypoint_env" . | indent 10 }}
+          {{- if .Values.sentry.enabled }}
+          - name: SENTRY_DSN
+            valueFrom:
+              secretKeyRef:
+                name: sentry
+                key: {{ .Chart.Name }}.DSN.python
+            {{- end }}
+{{- if or $hypervisor.python_warnings .Values.python_warnings }}
+          - name: PYTHONWARNINGS
+            value: {{ or $hypervisor.python_warnings .Values.python_warnings | quote }}
+{{- end }}
+          volumeMounts:
+          - mountPath: /var/lib/nova/instances
+            name: instances
+          - mountPath: /var/lib/libvirt
+            name: libvirt
+          - mountPath: /lib/modules
+            name: modules
+            readOnly: true
+          - mountPath: /var/run
+            name: run
+          - mountPath: /etc/nova
+            name: etcnova
+          - mountPath: /etc/nova/nova.conf
+            name: nova-etc
+            subPath: nova.conf
+            readOnly: true
+          {{- /* Note I533984: Replace with plain policy.yaml after Xena upgrade */}}
+          - mountPath: /etc/nova/{{if (.Values.imageVersion | hasPrefix "rocky") }}policy.json{{else}}policy.yaml{{end}}
+            name: nova-etc
+            subPath: {{if (.Values.imageVersion | hasPrefix "rocky") }}policy.json{{else}}policy.yaml{{end}}
+            readOnly: true
+          - mountPath: /etc/nova/logging.ini
+            name: nova-etc
+            subPath: logging.ini
+            readOnly: true
+          - mountPath: /etc/nova/nova-compute.conf
+            name: hypervisor-config
+            subPath: nova-compute.conf
+            readOnly: true
+          - mountPath: /etc/nova/rootwrap.conf
+            name: nova-etc
+            subPath: rootwrap.conf
+            readOnly: true
+        - name: nova-libvirt
+          image: {{ tuple . "libvirt" | include "container_image_nova" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+          - kubernetes-entrypoint
+          env:
+          - name: COMMAND
+            value: /container.init/nova-libvirt-start
+          {{- include "k8s_entrypoint_env" . | indent 10 }}
+          {{- if .Values.sentry.enabled }}
+          - name: SENTRY_DSN
+            valueFrom:
+              secretKeyRef:
+                name: sentry
+                key: {{ .Chart.Name }}.DSN.python
+          {{- end }}
+          volumeMounts:
+          - mountPath: /var/lib/nova/instances
+            name: instances
+          - mountPath: /var/lib/libvirt
+            name: libvirt
+          - mountPath: /var/run
+            name: run
+          - mountPath: /lib/modules
+            name: modules
+            readOnly: true
+          - mountPath: /etc/nova
+            name: etcnova
+          - mountPath: /etc/nova/nova.conf
+            name: nova-etc
+            subPath: nova.conf
+            readOnly: true
+          {{- /* Note I533984: Replace with plain policy.yaml after Xena upgrade */}}
+          - mountPath: /etc/nova/{{if (.Values.imageVersion | hasPrefix "rocky") }}policy.json{{else}}policy.yaml{{end}}
+            name: nova-etc
+            subPath: {{if (.Values.imageVersion | hasPrefix "rocky") }}policy.json{{else}}policy.yaml{{end}}
+            readOnly: true
+          - mountPath: /etc/nova/logging.ini
+            name: nova-etc
+            subPath: logging.ini
+            readOnly: true
+          - mountPath: /etc/libvirt
+            name: etclibvirt
+          - mountPath: /etc/libvirt/libvirtd.conf
+            name: hypervisor-config
+            subPath: libvirtd.conf
+            readOnly: true
+          - mountPath: /container.init
+            name: nova-container-init
+        - name: nova-virtlog
+          image: {{ tuple . "libvirt" | include "container_image_nova" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+          - kubernetes-entrypoint
+          env:
+          - name: COMMAND
+            value: /usr/sbin/virtlogd
+          {{- include "k8s_entrypoint_env" . | indent 10 }}
+          {{- if .Values.sentry.enabled }}
+          - name: SENTRY_DSN
+            valueFrom:
+              secretKeyRef:
+                name: sentry
+                key: {{ .Chart.Name }}.DSN.python
+          {{- end }}
+          volumeMounts:
+          - mountPath: /var/lib/nova/instances
+            name: instances
+          - mountPath: /var/lib/libvirt
+            name: libvirt
+          - mountPath: /var/run
+            name: run
+          - mountPath: /lib/modules
+            name: modules
+            readOnly: true
+          - mountPath: /etc/nova
+            name: etcnova
+          - mountPath: /etc/nova/nova.conf
+            name: nova-etc
+            subPath: nova.conf
+            readOnly: true
+          {{- /* Note I533984: Replace with plain policy.yaml after Xena upgrade */}}
+          - mountPath: /etc/nova/{{if (.Values.imageVersion | hasPrefix "rocky") }}policy.json{{else}}policy.yaml{{end}}
+            name: nova-etc
+            subPath: {{if (.Values.imageVersion | hasPrefix "rocky") }}policy.json{{else}}policy.yaml{{end}}
+            readOnly: true
+          - mountPath: /etc/nova/logging.ini
+            name: nova-etc
+            subPath: logging.ini
+            readOnly: true
+          - mountPath: /etc/libvirt
+            name: etclibvirt
+          - mountPath: /etc/libvirt/libvirtd.conf
+            name: hypervisor-config
+            subPath: libvirtd.conf
+            readOnly: true
+          - mountPath: /container.init
+            name: nova-container-init
+        - name: neutron-openvswitch-agent
+          image: {{ required ".Values.global.registry is missing" .Values.global.registry}}/loci-neutron:{{.Values.imageVersionNeutron | required "Please set nova.imageVersionNeutron or similar" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+          - kubernetes-entrypoint
+          env:
+          - name: COMMAND
+            value: "/container.init/neutron-openvswitch-agent-start"
+          {{- include "k8s_entrypoint_env" . | indent 10 }}
+          volumeMounts:
+          - mountPath: /var/run/
+            name: run
+          - mountPath: /lib/modules
+            name: modules
+            readOnly: true
+          - mountPath: /neutron-etc
+            name: neutron-etc
+          - mountPath: /container.init
+            name: nova-container-init
+        - name: ovs
+          image: {{ required ".Values.global.registry is missing" .Values.global.registry}}/loci-neutron-openvswitch:{{.Values.imageVersionNeutron | required "Please set nova.imageVersionNeutron or similar" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+          - kubernetes-entrypoint
+          env:
+          - name: COMMAND
+            value: /container.init/neutron-ovs-start
+          {{- include "k8s_entrypoint_env" . | indent 10 }}
+          volumeMounts:
+          - mountPath: /var/run/
+            name: run
+          - mountPath: /lib/modules
+            name: modules
+            readOnly: true
+          - mountPath: /container.init
+            name: nova-container-init
+        - name: ovs-db
+          image: {{ required ".Values.global.registry is missing" .Values.global.registry}}/loci-neutron-openvswitch:{{.Values.imageVersionNeutron | required "Please set nova.imageVersionNeutron or similar" }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+          - kubernetes-entrypoint
+          env:
+          - name: COMMAND
+            value: /container.init/neutron-ovs-db-start
+          {{- include "k8s_entrypoint_env" . | indent 10 }}
+          volumeMounts:
+          - mountPath: /var/run/
+            name: run
+          - mountPath: /container.init
+            name: nova-container-init
+      volumes:
+      - name: instances
+        persistentVolumeClaim:
+          claimName: nova-kvm-shared
+      - name: libvirt
+        emptyDir:
+          medium: Memory
+      - name: run
+        emptyDir:
+          medium: Memory
+      - name: modules
+        hostPath:
+          path: /lib/modules
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+      - name: hypervisor-config
+        configMap:
+          name: nova-compute-kvm
+      - name: etclibvirt
+        emptyDir: {}
+      - name: etcnova
+        emptyDir: {}
+      - name: nova-etc
+        configMap:
+          name: nova-etc
+      - name: nova-patches
+        configMap:
+          name: nova-patches
+      - name: neutron-etc
+        configMap:
+          name: neutron-etc
+      - name: nova-container-init
+        configMap:
+          name: nova-bin
+          defaultMode: 0755
+{{- end }}
